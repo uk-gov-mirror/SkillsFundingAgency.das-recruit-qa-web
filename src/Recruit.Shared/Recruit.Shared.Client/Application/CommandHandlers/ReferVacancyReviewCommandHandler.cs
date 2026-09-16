@@ -1,15 +1,17 @@
-﻿using System.Linq;
+﻿using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Recruit.Vacancies.Client.Application.Commands;
 using Recruit.Vacancies.Client.Application.Providers;
 using Recruit.Vacancies.Client.Domain.Entities;
-using Recruit.Vacancies.Client.Domain.Events;
-using Recruit.Vacancies.Client.Domain.Messaging;
 using Recruit.Vacancies.Client.Domain.Repositories;
 using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Recruit.Vacancies.Client.Infrastructure.OuterApi.Interfaces;
+using Recruit.Vacancies.Client.Infrastructure.OuterApi.Requests;
+using Recruit.Vacancies.Client.Infrastructure.Services;
 
 namespace Recruit.Vacancies.Client.Application.CommandHandlers;
 
@@ -17,9 +19,9 @@ public class ReferVacancyReviewCommandHandler(
     ILogger<ReferVacancyReviewCommandHandler> logger,
     IVacancyReviewRepository vacancyReviewRepositoryRunner,
     IVacancyReviewQuery vacancyReviewQuery,
-    IMessaging messaging,
     IValidator<VacancyReview> vacancyReviewValidator,
-    ITimeProvider timeProvider)
+    ITimeProvider timeProvider,
+    IRecruitQaOuterApiClient outerApiClient)
     : IRequestHandler<ReferVacancyReviewCommand, Unit>
 {
     public async Task<Unit> Handle(ReferVacancyReviewCommand message, CancellationToken cancellationToken)
@@ -52,11 +54,12 @@ public class ReferVacancyReviewCommandHandler(
         Validate(review);
 
         await vacancyReviewRepositoryRunner.UpdateAsync(review);
-        await messaging.PublishEvent(new VacancyReviewReferredEvent
-        {
-            VacancyReference = review.VacancyReference,
-            ReviewId = review.Id
-        });
+        
+        var retryPolicy = PollyRetryPolicy.GetPolicy();
+        await retryPolicy.Execute(
+            _ => outerApiClient.Post(new PostReferVacancyRequest(review.VacancyReference)),
+            new Dictionary<string, object> { { "apiCall", "ReferVacancy" } });
+        
         return Unit.Value;
     }
 
